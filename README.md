@@ -4,6 +4,8 @@ ChelomEx
 Software for the isotope assisted discovery of metal chelating agents from high-resolution LC-MS data
 ChelomEx is implemented in MatLab R2013b
 
+Binaries and test data can be downloaded at http://chelomex.sourceforge.net/
+
 To start the ChelomEx GUI from MatLab type ChelomEx_Menu from the MatLab prompt. 
 
 The program includes the following files:
