@@ -1,0 +1,317 @@
+function results = ptrnpkcor(pattern, ptrnresult, mzselect, consterror, error, minerror, pks, ts, makefigure)
+% Tests for match between patterns chromatograms and found individual patterns 
+% Input: metalID is a string with the metal formula name;  condense is the matrix with the condensed output from MAVEN
+% resulting from CondenseHits_M; Times is a cell array containing the according times for each run;
+% Runs is a cell representing mass spectra at consecutive times in the LC-MS run
+% consterror specifies if constant m/z error should be used (1) or if a ppm
+% error shall be used (0), the corresponding error is given in the next
+% variable; minerror is the minimum error in case a relative error is used
+% Draw = 1 draws the eics for each compound; 0 does not drow
+% chrom. 
+
+% example for usage: 
+%  ABLFe_Scores=(ABLFe_C(:,:),[6 8 10 18], 0, 3, ImportPeaks(9:10), ImportTimes(9:10),0);
+
+% matching of patterns to eics uses 4 criteria:
+% (1) co-variation of different isotopes with time
+% (2) average isotope ratios and mass differences across a peak
+% (3)
+
+
+%% Load information about pattern and initialize parameters
+pkct = 0;
+ptrn = struct('pkct', [], 'mz', [], 'dmz', [], 'dmzerr', [], 'IRel', [], 'IRelerr', [], 'required',[]);    %peaks that are required for scoring are stored here
+for m = 1:length(pattern)
+    for n = 1:length(pattern(m).dmz)        
+        pkct = pkct + 1;
+        if pattern(m).required(n) == 11 || pattern(m).required(n) == 31
+            ptrn.pkct = [ptrn.pkct pkct];
+            ptrn.dmz = [ptrn.dmz pattern(m).dmz(n)]; 
+            ptrn.dmzerr = [ptrn.dmzerr pattern(m).dmzerr(:,n)];
+            ptrn.IRel = [ptrn.IRel pattern(m).IRel(n)];
+            ptrn.IRelerr = [ptrn.IRelerr pattern(m).IRelerr(:,n)];
+            ptrn.required = [ptrn.required pattern(m).required(n)];
+            
+        end
+    end
+end
+numdpks = length(ptrn.dmz);
+numpks = numdpks + 1;
+
+mzcol = 4;     %mz column in condense.pks
+zcol = mzcol+1;
+dmzcols = 4+ptrn.pkct*2;
+
+ %if mz list is given: get scores only for those mz values --> find and use only those mz values in condense.pks 
+if nargin == 9         
+    pklist = zeros(size(ptrnresult.pks,1),1);
+    for i = 1:length(mzselect)
+        if consterror == 1
+            err = error;
+        elseif consterror == 0 
+            err = max(minerror,mzselect(i)*error*(10^-6));
+        end
+        pklist = pklist+(ptrnresult.pks(:,4) >= (mzselect(i) - err) & ptrnresult.pks(:,4) <= (mzselect(i) + err));  
+    end
+    ptrnresult.pks = ptrnresult.pks(pklist > 0,:);
+    ptrnresult.pkspattern = ptrnresult.pkspattern(pklist > 0,:);
+end
+
+mzlength = size(ptrnresult.pks,1);
+zs = ptrnresult.pks(:,zcol);
+timelength = length(ts);
+
+results.header = {'pass' 'mz' 'z' 'goodint' 'totalint' 'PeakMax' 'RT Max' 'RT start' 'RT end' 'good%' 'numpeaks'};
+for i=1:numdpks
+   results.header{1,size(results.header,2)+1} = ['dmz' num2str(i)];
+   results.header{1,size(results.header,2)+1} = ['cor' num2str(i)];
+   results.header{1,size(results.header,2)+1} = ['ddmz' num2str(i)];
+   results.header{1,size(results.header,2)+1} = ['IRel' num2str(i)];
+   results.header{1,size(results.header,2)+1} = ['IRelerr' num2str(i)];
+end
+results.data = zeros(mzlength,size(results.header,2));
+
+progbar = waitbar(0,sprintf('%3.1f %0s',0,' %'), 'Name', 'Evaluating pattern peak correlation...', 'CreateCancelBtn', 'setappdata(gcbf,''canceling'',1)');
+setappdata(progbar, 'canceling', 0);
+
+%% start algorithm - loop for each mz value
+for i=1:mzlength
+    
+    % progress bar
+    if mzlength > 50
+        waitbar(i/mzlength, progbar, sprintf('%3.1f %0s','z=',z,done*100,' %'));        
+    end
+    
+    %initialization of variables  
+    z = zs(i);
+        %calculate m/z value for each peak
+    zerocols = (ptrnresult.pks(i,dmzcols) == 0);
+    if ~isempty(find(zerocols,1))
+        ptrnresult.pks(i,dmzcols(zerocols)) = ptrn.dmz(zerocols)./z;
+    end
+    ptrn.mz = [ptrnresult.pks(i,mzcol) ptrnresult.pks(i,dmzcols)+ptrnresult.pks(i,mzcol)];
+    if consterror == 1
+        err = error;
+    elseif consterror == 0 
+        err = max(minerror,ptrn.mz(1)*error*(10^-6));
+    end
+    clear int chrom
+    
+    %get EICs
+    [int,~,eics] = eic(ptrn.mz, 1, err, pks, ts, makefigure);  %int contains integrals for each m/z; chrom contains chromatogram info with (1)m/z values, (2)intensities, (3) times
+     
+    % 1) find time-windows of matching patterns (all matching patterns for each mz value are stored in condense.hits) 
+    %    then compare if they correspond to an eic peak in a second step
+    % a time window consists of connected nonzero scores or
+    % disconnected nonzero scores if the number of zeros in between is
+    % less than a threshold (e.g. 4). Signals that are not part of a
+    % block with a minimum peak width (e.g. 3 signals) are discarded
+    % 2) find EIC peaks: define constant baseline level, peaks start where
+    % signal increases above baseline and ends where they fall below
+    % baseline; the baseline can be a minimum peak height or defined for example by the average peak height of the found patterns * 0.5
+    % peak retention time is the time of absolute maximum within the peak window
+    
+    maxzeros = 4; %must be an even number!
+    minsignal = 3;
+    minpeakwidth = 3;
+    
+    blocks = [];
+    pknum = 0;
+    
+    hits = ptrnresult.score(ptrnresult.score(:,mzcol-1) >= ptrn.mz(1)-err & ptrnresult.score(:,mzcol-1) <= ptrn.mz(1)+err & ptrnresult.score(:,mzcol) == z,1:mzcol);
+    minpkheight = mean(hits(:,2))*0.5;   %minpkheight is equal to the baseline used for figuring out the peakends
+ 
+    smoothchrom = smooth(eics{1}(:,2),maxzeros+1);
+    peakends = find((smoothchrom - minpkheight) <= 0);
+    if ~isempty(peakends)
+        peakendlength = length(peakends);
+        pks = zeros(peakendlength-1,2);
+        for k = 1:(peakendlength-1)
+            if peakends(k+1) - peakends(k) > minpeakwidth %min three signals above baseline in a peak
+                pknum = pknum + 1;
+                pks(pknum,:) = [peakends(k)+1 peakends(k+1)-1];  %peaks contains number of collected spectrum for start and end of peak.
+            end
+        end
+        if (timelength - peakends(peakendlength)) > minpeakwidth
+            pknum = pknum + 1;
+            pks(pknum,:) = [peakends(peakendlength)+1 timelength];
+        end
+        pks(pks(:,1) == 0,:) = [];
+    else
+        pks = [1 timelength];
+    end
+    
+    [~,nohits] = vcompare(ts,2,[hits ones(size(hits,1),1)],5,1,0.001); nohits(:,2:4) = 0; hits = sortrows([hits(:,1:mzcol);nohits],1);
+    
+    SmoothScore = smooth(hits(:,2),maxzeros+1);        %smoothing with window 5: zeros are retained in between blocks of numbers if >4x Zero occurs
+    blockends = union(find(SmoothScore == 0), peakends);
+    if length(blockends) > 2
+        for k = 1:(length(blockends)-2)
+            if blockends(k+1) - blockends(k) > minsignal %min three nonzero scores in each block
+                blocks(size(blocks,1)+1,:) = [blockends(k)+1 blockends(k+1)-1];  %blocks contains number of collected spectrum for start and end of score block. these blocks are then tested if they correspond to a peak
+            end
+        end
+        if (timelength-blockends(length(blockends))) > minsignal  %Test separate for last element if it is further away from end of chromatogram than 3
+            blocks(size(blocks,1)+1,:) = [blockends(length(blockends))+1 timelength];
+        end
+    end
+
+
+
+
+
+    %2) Test if
+    %a) block is within the boundaries of a peak (find closest pkstart for peakend, with RT(peakstart) <= RT(blockstart) and RT(peakend) >= RT(blockend)
+    %b) does the block contain the peak maximum!
+    %c) is the average score at the 3 points around peak maximum >= average score of whole block-1std deviation
+   
+    goodpeaks = [];
+
+    if ~isempty(blocks) && ~isempty(pks)
+        blocknumber = length(blocks(:,1));
+        for k = 1:blocknumber
+            blockstart = blocks(k,1);
+            blockend = blocks(k,2);
+            nearestpeakrow = find((blockstart - pks(:,1) >= 0), 1, 'last');
+
+            if ~isempty(nearestpeakrow)
+                nearestpeak = pks(nearestpeakrow,:);
+%                if nearestpeak(1,2) >= blockend
+                    nearestpeakmaxrow = find(eics{1}(:,2) == max(eics{1}(nearestpeak(1,1):nearestpeak(1,2),2)), 1, 'first');
+
+                    if (nearestpeakmaxrow >= blockstart && nearestpeakmaxrow <= blockend)
+                        nearestpeakmax = eics{1}(nearestpeakmaxrow,:);
+                        goodpeaks(size(goodpeaks,1)+1,:) = [sum(eics{1}(nearestpeak(1,1):nearestpeak(1,2),2)) nearestpeakmax(1,3) ts(nearestpeak(1,1)) ts(nearestpeak(1,2)) nearestpeak(1,1) nearestpeak(1,2)];
+                    end
+ %               end
+            end
+
+        end
+    end
+
+    pkptrn_intfraction = 0;
+    peakmaxRT = 0;
+    peakmaxStart = 0;
+    peakmaxEnd = 0;
+    peakmaxeic = 0;
+    peakchrom = cell(numpks,1);
+    numgdpks = 0;
+    pass = 0;
+    goodint = 0;
+     
+    if isempty(goodpeaks)
+        for k=numpks:-1:1
+            chrom.mz(k) = mean(eics{k}(~isnan(eics{k}(:,1)),1));
+            chrom.Int(k) = sum(eics{k}(~isnan(eics{k}(:,1)),2));
+        end
+        for k = numdpks:-1:1
+            chrom.dmz(k) = chrom.mz(k+1) - chrom.mz(1);
+            chrom.ddmz(k) = chrom.dmz(k) - ptrn.dmz(k)/z;
+            chrom.IRel(k) = roundn(chrom.Int(k+1)/chrom.Int(1),-2);
+            chrom.IRelerr(k) = chrom.IRel(k) - ptrn.IRel(k);
+            %correlation between intensities within peak
+            %covariation(k) = regression(peakchrom{1}(:,2),peakchrom{k}(:,2),'one');
+            if max(eics{k+1}(:,2)) > 0
+                [~,~,~,~,~,chrom.cor(k),~,~] = ols(eics{1}(:,2),eics{k+1}(:,2),0);  %regression through the origin, ols is a function of a MatLab package by Kevin Sheppard (http://www.kevinsheppard.com/wiki/MFE_Toolbox)
+            else 
+                chrom.cor(k) = NaN;
+            end
+        end
+    else
+        numgdpks = size(goodpeaks,1);
+        goodint = sum(goodpeaks(:,1));
+        peakmaxrow = find((goodpeaks(:,1)) == max(goodpeaks(:,1)),1,'first');
+        peakmaxint = goodpeaks(peakmaxrow,1);
+        peakmaxRT = goodpeaks(peakmaxrow,2);
+        peakmaxStart = goodpeaks(peakmaxrow,3);
+        peakmaxEnd = goodpeaks(peakmaxrow,4);
+        peakmaxeic = eics{1}(ts == peakmaxRT,2);
+        pkstartrow = goodpeaks(peakmaxrow,5);
+        pkendrow = goodpeaks(peakmaxrow,6);
+        
+        
+        % get intensity fraction of peak area that contains score blocks        
+        if ~isempty(blocks)
+            blockrows = find(blocks(:,1) >= pkstartrow & blocks(:,2) <= pkendrow);
+            if ~isempty(blockrows)
+                for l = 1:length(blockrows)
+                    pkptrn_intfraction = pkptrn_intfraction + sum(eics{1}(blocks(blockrows(l),1):blocks(blockrows(l),2),2));
+                end
+                pkptrn_intfraction = round(pkptrn_intfraction / peakmaxint * 100);
+            end
+        end
+        
+        %get eicsatogram of eics for selected peak retention times and
+        %calculate mean mz values, intensities, correlation 
+        for k=numpks:-1:1
+            peakchrom{k} = eics{k}(pkstartrow:pkendrow,:);   
+            chrom.Int(k) = sum(peakchrom{k}(~isnan(peakchrom{k}(:,1)),2));
+            chrom.mz(k) = sum(peakchrom{k}(~isnan(peakchrom{k}(:,1)),1).*(peakchrom{k}(~isnan(peakchrom{k}(:,1)),2)/chrom.Int(k)));
+        end
+        for k = numdpks:-1:1
+            chrom.dmz(k) = chrom.mz(k+1) - chrom.mz(1);
+            chrom.ddmz(k) = chrom.dmz(k) - ptrn.dmz(k)/z;
+            chrom.IRel(k) = roundn(chrom.Int(k+1)/chrom.Int(1),-2);
+            chrom.IRelerr(k) = chrom.IRel(k) - ptrn.IRel(k);
+            %correlation between intensities within peak
+            %covariation(k) = regression(peakchrom{1}(:,2),peakchrom{k}(:,2),'one');
+            if max(peakchrom{k+1}(:,2)) > 0
+                [~,~,~,~,~,chrom.cor(k),~,~] = ols(peakchrom{1}(:,2),peakchrom{k+1}(:,2),0);  %regression through the origin, ols is a function of a MatLab package by Kevin Sheppard (http://www.kevinsheppard.com/wiki/MFE_Toolbox)
+            else
+                chrom.cor(k) = NaN;
+            end
+        end
+        
+        %test if criteria for good pattern match are fulfilled
+        
+        if pkptrn_intfraction > 50 
+            pass = 1;
+            for k = 1:numdpks
+                if ptrn.required(k) == 11 && (abs(chrom.ddmz(k)) > (ptrn.dmzerr(1,k)+ptrn.dmzerr(3,k)+ptrn.dmzerr(2,k)*chrom.mz(1)*(10^-6)) || chrom.IRel(k) < ptrn.IRelerr(1,k) || chrom.IRel(k) > ptrn.IRelerr(2,k) || chrom.cor(k) < 0.75)
+                    pass = 0;
+                elseif ptrn.required(k) == 31 && abs(chrom.ddmz(k)) < (ptrn.dmzerr(1,k)+ptrn.dmzerr(3,k)+ptrn.dmzerr(2,k)*chrom.mz(1)*(10^-6)) && chrom.IRel(k) > ptrn.IRelerr(1,k) && chrom.cor(k) > 0.6
+                    pass = 0;
+                end
+            end
+        end
+    end
+      
+  %  Output
+  %   columns 1-11:   'pass'     'mz'        'z'    'PeakMax'  'goodint'    'totalint'  'RT Max'    'RT start'   'RT end'   'good%'    'numpeaks'
+  %   columns 12-16: 'dmz2' 'ddmz2' 'IRel2' 'IRelerr2' 'cor2'    
+  %   ... for other isotopes
+
+  results.data(i,1:11) = [pass chrom.mz(1) z int(1) goodint peakmaxeic peakmaxRT peakmaxStart peakmaxEnd pkptrn_intfraction numgdpks];
+  for k = numdpks:-1:1
+      results.data(i,12+(k-1)*5:16+(k-1)*5) = [chrom.dmz(k) chrom.cor(k) chrom.ddmz(k), chrom.IRel(k), chrom.IRelerr(k) ];
+  end
+ 
+  % plot option
+  if makefigure == 1
+      hold on;
+      plot(hits(hits(:,2) > 0,1),hits(hits(:,2) > 0,2),'bo');
+      plot(ptrnresult.pkspattern{i,3}(ptrnresult.pkspattern{i,3}(:,2) > 0,1),ptrnresult.pkspattern{i,3}(ptrnresult.pkspattern{i,3}(:,2) > 0,2),'ro');
+      if size(blocks,1) > 0
+             for j=1:length(blocks(:,1));
+                 plot([ts(blocks(j,1)) ts(blocks(j,1):blocks(j,2))' ts(blocks(j,2))], [0 1.2*peakmaxeic.*ones(1,blocks(j,2)-blocks(j,1)+1) 0],'r-');
+             end
+      end
+      if size(pks,1) > 0
+             for j=1:length(pks(:,1));
+                 plot([ts(pks(j,1)) ts(pks(j,1):pks(j,2))' ts(pks(j,2))], [0 1.1*peakmaxeic.*ones(1,pks(j,2)-pks(j,1)+1) 0],'Color', [205/255 140/255 0/255]);
+             end
+      end
+      results.data(i,:)
+      input('Press Key   ');
+      if i > 10 
+          close(gcf);
+      end
+  end
+
+end
+
+%Sort output
+results.data= sortrows(results.data,[-1 3 -6 2]); %pass/z/int/mz
+
+end
+
