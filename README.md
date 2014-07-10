@@ -9,6 +9,7 @@ To start the ChelomEx GUI from MatLab type ChelomEx_Menu from the MatLab prompt.
 The program includes the following files:
 
 Graphical User Interfaces
+-------------------------
 ChelomEx_Menu.m  ---  Main GUI
 ChelomEx_pattern_figure.m --- Visualization of pattern matched isotope cluster groups
 ChelomEx_peak_figure.m --- Visualization of pattern matched chromatographic features
@@ -17,9 +18,10 @@ ChelomEx_pattern_definition.m --- Definition of isotope patterns and related add
 ChelomEx_pattern_definition_isotopes.m --- Definition of an individual isotope
 ChelomEx_id_database.m --- Database search
 ChelomEx_search_manual.m --- Targeted istope pattern search using a manual entry for the monoisotope of a metal complex or free ligand
-ChelomEx_parameters_filters.m --- Definition of parameters to remove false positive after chromatographic coherence analysis of isotope patterns ...                      %  "
-       
+ChelomEx_parameters_filters.m --- Definition of parameters to remove false positive after chromatographic coherence analysis of isotope patterns
+
 Individual functions --- see description in the files
+-----------------------------------------------------
 search_Pattern.m 
 find_pattern.m 
 group_pattern.m 
@@ -47,9 +49,11 @@ rgb2hsl.m
 existMSMS.m 
       
 Additional files
+----------------
 default_parameters.mat  --- contains default parameter values 
 startup_parameters.mat --- contains parameter values that are loaded at startup
 database.mat --- contains the compound library used in ChelomEx 
 
-pngs and jpgs used in the GUI
+Icons used in the GUI
+---------------------
 ArrowDown.png, ArrowLeft.png, ArrowRight.png, ArrowUp.png, OpenFile.png, Chelon.png, Arrow_LaunchFigure.jpg
